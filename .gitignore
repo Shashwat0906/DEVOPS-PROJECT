@@ -21,7 +21,7 @@ jspm_packages/
 .env.test
 .env.production
 .env.local
-
+*.md
 # Build output
 frontend/build/
 backend/dist/

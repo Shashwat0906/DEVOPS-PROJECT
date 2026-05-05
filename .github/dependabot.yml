@@ -3,4 +3,4 @@ updates:
   - package-ecosystem: "npm"
     directory: "/backend"
     schedule:
-      interval: "daily"#!/bin/bash
+      interval: "daily"
