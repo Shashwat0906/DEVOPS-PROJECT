@@ -142,8 +142,8 @@ memory = var.ecs_task_memory
       ]
 
       # Resource constraints
-      cpu    = var.ecs_task_cpu * 0.9 # Leave some headroom
-      memory = var.ecs_task_memory * 0.9
+      cpu    = floor(var.ecs_task_cpu * 0.9) # Leave some headroom
+      memory = floor(var.ecs_task_memory * 0.9)
 
       # Health check
       healthCheck = {
