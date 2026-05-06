@@ -1,385 +1,228 @@
-name: CI/CD Pipeline - AWS Deployment
+name: AWS ECS Pipeline
 
-# Trigger conditions: on push to main/develop and on pull requests
 on:
   push:
-    branches: [main, develop]
+    branches: ["main"]
   pull_request:
-    branches: [main, develop]
+    branches: ["main"]
+  workflow_dispatch:
 
-# Environment variables for the pipeline
+concurrency:
+  group: deploy-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
 env:
-  AWS_REGION: us-east-1
-  ECR_REPOSITORY: devops-app
-  ECS_CLUSTER_NAME: devops-cluster
-  ECS_SERVICE_NAME: devops-service
-  ECS_TASK_DEFINITION_FAMILY: devops-task
+  AWS_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
+  TF_VAR_aws_region: ${{ secrets.AWS_REGION || 'us-east-1' }}
 
 jobs:
-  # =====================================================================
-  # PHASE 1: TESTING
-  # =====================================================================
-  test:
-    name: Run Tests
+  tests:
+    name: Phase 1 - Tests
     runs-on: ubuntu-latest
-    
-    strategy:
-      matrix:
-        node-version: [18.x, 20.x]
-
     steps:
-      # Checkout code
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v4
 
-      # Setup Node.js environment
-      - name: Setup Node.js ${{ matrix.node-version }}
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: ${{ matrix.node-version }}
-          cache: 'npm'
-          cache-dependency-path: backend/package-lock.json
+          node-version: "22"
+          cache: npm
 
-      # Install backend dependencies and run tests
-      - name: Install backend dependencies
-        run: cd backend && npm install
-        
-      - name: Run backend unit tests
-        run: cd backend && npm test -- --coverage --watchAll=false
-        continue-on-error: true
+      - name: Install dependencies
+        run: npm ci
 
-      # Install frontend dependencies and run tests
-      - name: Install frontend dependencies
-        run: cd frontend && npm install
-        continue-on-error: true
+      - name: Run backend unit + integration tests (JUnit)
+        run: npm run test:ci
 
-      - name: Run frontend unit tests
-        run: cd frontend && npm test -- --coverage --watchAll=false || true
-        continue-on-error: true
-
-      # Run integration tests (backend API tests)
-      - name: Run integration tests
-        run: cd backend && npm run test:integration || npm test
-        continue-on-error: true
-
-      # Upload test reports as artifacts
-      - name: Upload backend test coverage
+      - name: Upload test reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: backend-coverage-${{ matrix.node-version }}
-          path: backend/coverage/
-          retention-days: 30
+          name: test-reports
+          path: reports/
 
-      - name: Upload frontend test coverage
-        if: always()
-        uses: actions/upload-artifact@v4
-        continue-on-error: true
-        with:
-          name: frontend-coverage-${{ matrix.node-version }}
-          path: frontend/coverage/
-          retention-days: 30
-
-      # Run Cypress E2E tests
-      - name: Run Cypress E2E tests
-        uses: cypress-io/github-action@v5
-        continue-on-error: true
-        with:
-          build: npm run build --prefix frontend
-          start: npm start --prefix backend
-          browser: chrome
-
-      - name: Upload Cypress results
-        if: always()
-        uses: actions/upload-artifact@v4
-        continue-on-error: true
-        with:
-          name: cypress-results-${{ matrix.node-version }}
-          path: cypress/videos/
-          retention-days: 30
-
-  # =====================================================================
-  # PHASE 2: TERRAFORM INFRASTRUCTURE
-  # =====================================================================
   terraform:
-    name: Terraform Infrastructure
+    name: Phase 2 - Terraform
+    needs: tests
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
-    needs: [test]
-    # Only run on push to main/develop branches
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
-
+    outputs:
+      ecr_repository_url: ${{ steps.tf-output.outputs.ecr_repository_url }}
+      ecs_cluster_name: ${{ steps.tf-output.outputs.ecs_cluster_name }}
+      ecs_service_name: ${{ steps.tf-output.outputs.ecs_service_name }}
+      load_balancer_dns: ${{ steps.tf-output.outputs.load_balancer_dns }}
     steps:
-      # Checkout code
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v4
 
-      # Setup Terraform
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v2
-
-      # Configure AWS credentials
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v3
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      # Terraform Init
-      - name: Terraform Init
-        run: cd infrastructure && terraform init
-
-      # Terraform Plan
-      - name: Terraform Plan
-        run: cd infrastructure && terraform plan
-
-      # Terraform Apply
-      - name: Terraform Apply
-        run: cd infrastructure && terraform apply -auto-approve
-
-      # Capture Terraform outputs
-      - name: Terraform Outputs
-        id: terraform-outputs
-        run: |
-          cd infrastructure
-          echo "ecr_repository_url=$(terraform output -raw ecr_repository_url)" >> $GITHUB_OUTPUT
-          echo "ecs_cluster_name=$(terraform output -raw ecs_cluster_name)" >> $GITHUB_OUTPUT
-          echo "ecs_service_name=$(terraform output -raw ecs_service_name)" >> $GITHUB_OUTPUT
-          echo "alb_dns_name=$(terraform output -raw alb_dns_name)" >> $GITHUB_OUTPUT
-      ecr_repository_url: ${{ steps.terraform-outputs.outputs.ecr_repository_url }}
-      ecs_cluster_name: ${{ steps.terraform-outputs.outputs.ecs_cluster_name }}
-      ecs_service_name: ${{ steps.terraform-outputs.outputs.ecs_service_name }}
-      alb_dns_name: ${{ steps.terraform-outputs.outputs.alb_dns_name }}
-
-  # =====================================================================
-  # PHASE 3: CONTAINER BUILD AND ECS DEPLOYMENT
-  # =====================================================================
-  build_and_push:
-    name: Build Docker Image & Push to ECR
-    runs-on: ubuntu-latest
-    needs: [test, terraform]
-    # Only run on push to main/develop branches
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
-
-    steps:
-      # Checkout code
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      # Configure AWS credentials
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v3
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
         with:
-          aws-access-key-id: ${{ secrets.ASIA5PCCZNRVSDUTMYFE }}
-          aws-secret-access-key: ${{ secrets.ZpSmBvfB25LTkKWdoBnxqqBYkOBDSyX5UrOf7Pub }}
-          aws-region: ${{ secrets.AWS_REGION }}
+          terraform_wrapper: false
 
-      # Login to Amazon ECR
-      - name: Login to Amazon ECR
-        id: login_ecr
-        uses: aws-actions/amazon-ecr-login@v1
+      - name: Terraform init
+        working-directory: infrastructure
+        run: terraform init -input=false -reconfigure
 
-      # Set up Docker Buildx (for multi-stage builds)
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
+      - name: Terraform validate
+        working-directory: infrastructure
+        run: terraform validate
 
-      # Build and push Docker image with multi-stage build
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v4
-        with:
-          context: .
-          file: ./Dockerfile
-          push: true
-          tags: |
-            ${{ steps.login_ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
-            ${{ steps.login_ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+      - name: Terraform plan
+        working-directory: infrastructure
+        run: terraform plan -out=tfplan -input=false
 
-      # Store ECR image URI for next job
-      - name: Export ECR image URI
-        id: image
+      - name: Terraform apply
+        working-directory: infrastructure
+        run: terraform apply -auto-approve tfplan
+
+      - name: Capture Terraform outputs
+        id: tf-output
+        working-directory: infrastructure
         run: |
-          echo "image=${{ steps.login_ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}" >> $GITHUB_OUTPUT
+          echo "ecr_repository_url=$(terraform output -raw ecr_repository_url)" >> "$GITHUB_OUTPUT"
+          echo "ecs_cluster_name=$(terraform output -raw ecs_cluster_name)" >> "$GITHUB_OUTPUT"
+          echo "ecs_service_name=$(terraform output -raw ecs_service_name)" >> "$GITHUB_OUTPUT"
+          echo "load_balancer_dns=$(terraform output -raw load_balancer_dns)" >> "$GITHUB_OUTPUT"
 
-    outputs:
-      docker_image: ${{ steps.image.outputs.image }}
-
-  # =====================================================================
-  # DEPLOYMENT TO ECS FARGATE
-  # =====================================================================
   deploy-ecs:
-    name: Deploy to ECS Fargate
+    name: Phase 3 - Build, Push, Deploy ECS
+    needs: terraform
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
-    needs: [build_and_push]
-    # Only run on push to main/develop branches
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
-
+    env:
+      ECR_REPOSITORY_URL: ${{ needs.terraform.outputs.ecr_repository_url }}
+      ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
+      ECS_CLUSTER_NAME: ${{ needs.terraform.outputs.ecs_cluster_name }}
+      ECS_SERVICE_NAME: ${{ needs.terraform.outputs.ecs_service_name }}
+      ALB_DNS_NAME: ${{ needs.terraform.outputs.load_balancer_dns }}
+      IMAGE_TAG: ${{ github.sha }}
     steps:
-      # Checkout code
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v4
 
-      # Configure AWS credentials
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v3
+        uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.ASIA5PCCZNRVSDUTMYFE}}
-          aws-secret-access-key: ${{ secrets.ZpSmBvfB25LTkKWdoBnxqqBYkOBDSyX5UrOf7Pub}}
-          aws-region: ${{ env.us-east-1 }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
 
-      # Download task definition from ECS
-      - name: Download ECS task definition
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Resolve ECR repository URL
         run: |
-          aws ecs describe-task-definition \
-            --task-definition ${{ env.ECS_TASK_DEFINITION_FAMILY }} \
-            --query taskDefinition > task-definition.json
-        continue-on-error: true
+          if [ -z "$ECR_REPOSITORY_URL" ] && [ -n "$ECR_REPOSITORY" ]; then
+            ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+            ECR_REPOSITORY_URL="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPOSITORY}"
+          fi
+          if [ -z "$ECR_REPOSITORY_URL" ]; then
+            echo "ECR_REPOSITORY_URL is empty. Check terraform output ecr_repository_url or set ECR_REPOSITORY secret."
+            exit 1
+          fi
+          echo "ECR_REPOSITORY_URL=$ECR_REPOSITORY_URL" >> "$GITHUB_ENV"
 
-      # Update task definition with new image
-      - name: Update ECS task definition
-        id: task-def
-        uses: aws-actions/amazon-ecs-render-task-definition@v1
-        continue-on-error: true
-        with:
-          task-definition: task-definition.json
-          container-name: ${{ env.ECS_TASK_DEFINITION_FAMILY }}
-          image: ${{ needs.build_and_push.outputs.docker_image }}
-
-      # Register new task definition
-      - name: Register new task definition
-        if: steps.task-def.outcome == 'success'
+      - name: Build and push Docker image
         run: |
-          aws ecs register-task-definition \
-            --cli-input-json file://task-definition.json
-        continue-on-error: true
+          docker build -t "$ECR_REPOSITORY_URL:$IMAGE_TAG" -t "$ECR_REPOSITORY_URL:latest" .
+          docker push "$ECR_REPOSITORY_URL:$IMAGE_TAG"
+          docker push "$ECR_REPOSITORY_URL:latest"
 
-      # Update ECS service to use new task definition
-      - name: Update ECS service
+      - name: Register new task definition revision
+        id: taskdef
         run: |
-          aws ecs update-service \
-            --cluster ${{ env.ECS_CLUSTER_NAME }} \
-            --service ${{ env.ECS_SERVICE_NAME }} \
-            --force-new-deployment
-        continue-on-error: true
-
-      # Wait for service to stabilize
-      - name: Wait for ECS service to stabilize
-        run: |
-          aws ecs wait services-stable \
-            --cluster ${{ env.ECS_CLUSTER_NAME }} \
-            --services ${{ env.ECS_SERVICE_NAME }}
-        continue-on-error: true
-
-  # =====================================================================
-  # HEALTH CHECK & VERIFICATION
-  # =====================================================================
-  health-check:
-    name: Verify Service Health
-    runs-on: ubuntu-latest
-    needs: [build_and_push, deploy-ecs]
-    # Only run on push to main/develop branches
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
-
-    steps:
-      # Configure AWS credentials
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v3
-        with:
-          aws-access-key-id: ${{ secrets.ASIA5PCCZNRVSDUTMYFE }}
-          aws-secret-access-key: ${{ secrets.ZpSmBvfB25LTkKWdoBnxqqBYkOBDSyX5UrOf7Pub }}
-          aws-region: ${{ env.us-east-1 }}
-
-      # Get service details and check running tasks
-      - name: Check ECS service status
-        run: |
-          echo "Checking ECS service status..."
-          aws ecs describe-services \
-            --cluster ${{ env.ECS_CLUSTER_NAME }} \
-            --services ${{ env.ECS_SERVICE_NAME }} \
-            --query 'services[0].[status,runningCount,desiredCount]' \
-            --output table
-
-      # List running tasks
-      - name: List running ECS tasks
-        run: |
-          echo "Listing running tasks..."
-          aws ecs list-tasks \
-            --cluster ${{ env.ECS_CLUSTER_NAME }} \
-            --service-name ${{ env.ECS_SERVICE_NAME }} \
-            --desired-status RUNNING \
-            --output table
-
-      # Get task details for health verification
-      - name: Verify task health
-        run: |
-          TASKS=$(aws ecs list-tasks \
-            --cluster ${{ env.ECS_CLUSTER_NAME }} \
-            --service-name ${{ env.ECS_SERVICE_NAME }} \
-            --desired-status RUNNING \
-            --query 'taskArns[0]' \
+          TASK_DEF_ARN=$(aws ecs describe-services \
+            --cluster "$ECS_CLUSTER_NAME" \
+            --services "$ECS_SERVICE_NAME" \
+            --query 'services[0].taskDefinition' \
             --output text)
 
-          if [ -z "$TASKS" ]; then
-            echo "⚠️  No running tasks found!"
-            exit 1
-          fi
+          aws ecs describe-task-definition \
+            --task-definition "$TASK_DEF_ARN" \
+            --query 'taskDefinition' > task-def.json
 
-          echo "Task details:"
-          aws ecs describe-tasks \
-            --cluster ${{ env.ECS_CLUSTER_NAME }} \
-            --tasks $TASKS \
-            --query 'tasks[0].[taskArn,lastStatus,healthStatus]' \
-            --output table
-        continue-on-error: true
+          NEW_IMAGE="$ECR_REPOSITORY_URL:$IMAGE_TAG"
+          jq --arg IMAGE "$NEW_IMAGE" '
+            .containerDefinitions |= map(
+              if .name == "api" or .name == "worker" then .image = $IMAGE else . end
+            )
+            | del(.taskDefinitionArn,.revision,.status,.requiresAttributes,.compatibilities,.registeredAt,.registeredBy)
+          ' task-def.json > task-def-updated.json
 
-      # Verify application endpoint (optional - requires ALB DNS)
-      - name: Verify application health endpoint
+          NEW_TASK_DEF_ARN=$(aws ecs register-task-definition \
+            --cli-input-json file://task-def-updated.json \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)
+          echo "task_definition_arn=$NEW_TASK_DEF_ARN" >> "$GITHUB_OUTPUT"
+
+      - name: Update ECS service to new revision
         run: |
-          echo "Attempting to verify application health..."
-          # This would need actual ALB endpoint - uncomment when available
-          # curl -f http://<ALB_DNS_NAME>/health || true
-          echo "Health check would verify application at ALB endpoint"
-        continue-on-error: true
+          aws ecs update-service \
+            --cluster "$ECS_CLUSTER_NAME" \
+            --service "$ECS_SERVICE_NAME" \
+            --task-definition "${{ steps.taskdef.outputs.task_definition_arn }}" \
+            --no-cli-pager
 
-      # Summary
-      - name: Deployment summary
-        if: always()
+      - name: Verify ECS service rollout
+        run: aws ecs wait services-stable --cluster "$ECS_CLUSTER_NAME" --services "$ECS_SERVICE_NAME"
+
+      - name: Resolve ALB DNS (fallback)
         run: |
-          echo "=================================="
-          echo "✅ Deployment Summary"
-          echo "=================================="
-          echo "Repository: ${{ github.repository }}"
-          echo "Branch: ${{ github.ref }}"
-          echo "Commit: ${{ github.sha }}"
-          echo "Docker Image: ${{ needs.build_and_push.outputs.docker_image }}"
+          if [ -z "$ALB_DNS_NAME" ]; then
+            TG_ARN=$(aws ecs describe-services \
+              --cluster "$ECS_CLUSTER_NAME" \
+              --services "$ECS_SERVICE_NAME" \
+              --query 'services[0].loadBalancers[0].targetGroupArn' \
+              --output text)
+            LB_ARN=$(aws elbv2 describe-target-groups \
+              --target-group-arns "$TG_ARN" \
+              --query 'TargetGroups[0].LoadBalancerArns[0]' \
+              --output text)
+            ALB_DNS_NAME=$(aws elbv2 describe-load-balancers \
+              --load-balancer-arns "$LB_ARN" \
+              --query 'LoadBalancers[0].DNSName' \
+              --output text)
+          fi
+          if [ -z "$ALB_DNS_NAME" ] || [ "$ALB_DNS_NAME" = "None" ]; then
+            echo "Could not resolve ALB DNS name."
+            exit 1
+          fi
+          echo "ALB_DNS_NAME=$ALB_DNS_NAME" >> "$GITHUB_ENV"
 
-  notify:
-    name: Pipeline Notification
-    runs-on: ubuntu-latest
-    needs: [test, build_and_push, deploy-ecs, health-check]
-    if: always()
-
-    steps:
-      - name: Pipeline status notification
+      - name: Wait for ALB target health
         run: |
-          if [[ "${{ needs.test.result }}" == "failure" ]]; then
-            echo "❌ Tests failed! Pipeline halted."
-            exit 1
-          fi
-          
-          if [[ "${{ needs.build_and_push.result }}" == "failure" ]]; then
-            echo "❌ Docker build failed! Pipeline halted."
-            exit 1
-          fi
-          
-          if [[ "${{ needs.deploy-ecs.result }}" == "failure" ]]; then
-            echo "❌ ECS deployment failed! Manual intervention may be required."
-            exit 1
-          fi
-          
-          if [[ "${{ needs.health-check.result }}" == "failure" ]]; then
-            echo "⚠️  Health checks failed. Service may be unhealthy."
-          fi
-          
-          echo "✅ Pipeline completed successfully!"
+          TG_ARN=$(aws ecs describe-services \
+            --cluster "$ECS_CLUSTER_NAME" \
+            --services "$ECS_SERVICE_NAME" \
+            --query 'services[0].loadBalancers[0].targetGroupArn' \
+            --output text)
+          for i in {1..36}; do
+            STATES=$(aws elbv2 describe-target-health \
+              --target-group-arn "$TG_ARN" \
+              --query 'TargetHealthDescriptions[].TargetHealth.State' \
+              --output text)
+            echo "target states: $STATES"
+            if echo "$STATES" | grep -Eq '(^|[[:space:]])healthy($|[[:space:]])'; then
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Targets did not become healthy in time."
+          exit 1
+
+      - name: Verify service endpoint
+        run: curl --fail --retry 12 --retry-delay 10 --retry-all-errors "http://$ALB_DNS_NAME/health"
