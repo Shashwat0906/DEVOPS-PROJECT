@@ -119,8 +119,8 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v3
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-access-key-id: ${{ secrets.ASIA5PCCZNRVSDUTMYFE}}
+          aws-secret-access-key: ${{ secrets.ZpSmBvfB25LTkKWdoBnxqqBYkOBDSyX5UrOf7Pub }}
           aws-region: ${{ env.AWS_REGION }}
 
       # Create S3 bucket for Terraform state (if not exists)
@@ -248,8 +248,8 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v3
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-access-key-id: ${{ secrets.ASIA5PCCZNRVSDUTMYFE }}
+          aws-secret-access-key: ${{ secrets.ZpSmBvfB25LTkKWdoBnxqqBYkOBDSyX5UrOf7Pub }}
           aws-region: ${{ env.AWS_REGION }}
 
       # Login to Amazon ECR
