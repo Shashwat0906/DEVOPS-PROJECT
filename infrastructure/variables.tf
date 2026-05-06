@@ -71,7 +71,7 @@ variable "ecs_task_count" {
 variable "container_port" {
   description = "Port exposed by container"
   type        = number
-  default     = 3000
+  default     = 5001
 }
 
 variable "health_check_path" {
