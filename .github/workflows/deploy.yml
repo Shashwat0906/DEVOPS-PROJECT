@@ -33,8 +33,6 @@ jobs:
       # Checkout code
       - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       # Setup Node.js environment
       - name: Setup Node.js ${{ matrix.node-version }}
@@ -116,8 +114,6 @@ jobs:
       # Checkout code
       - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       # Configure AWS credentials
       - name: Configure AWS credentials
@@ -248,8 +244,6 @@ jobs:
       # Checkout code
       - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       # Configure AWS credentials
       - name: Configure AWS credentials
@@ -305,8 +299,6 @@ jobs:
       # Checkout code
       - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       # Configure AWS credentials
       - name: Configure AWS credentials
