@@ -121,7 +121,7 @@ jobs:
         with:
           aws-access-key-id: ${{ secrets.ASIA5PCCZNRVSDUTMYFE}}
           aws-secret-access-key: ${{ secrets.ZpSmBvfB25LTkKWdoBnxqqBYkOBDSyX5UrOf7Pub }}
-          aws-region: ${{ env.AWS_REGION }}
+          aws-region: ${{ env.us-east-1 }}
 
       # Create S3 bucket for Terraform state (if not exists)
       - name: Create S3 backend bucket for Terraform state
@@ -250,7 +250,7 @@ jobs:
         with:
           aws-access-key-id: ${{ secrets.ASIA5PCCZNRVSDUTMYFE }}
           aws-secret-access-key: ${{ secrets.ZpSmBvfB25LTkKWdoBnxqqBYkOBDSyX5UrOf7Pub }}
-          aws-region: ${{ env.AWS_REGION }}
+          aws-region: ${{ env.us-east-1 }}
 
       # Login to Amazon ECR
       - name: Login to Amazon ECR
@@ -304,7 +304,7 @@ jobs:
         with:
           aws-access-key-id: ${{ secrets.ASIA5PCCZNRVSDUTMYFE}}
           aws-secret-access-key: ${{ secrets.ZpSmBvfB25LTkKWdoBnxqqBYkOBDSyX5UrOf7Pub}}
-          aws-region: ${{ env.AWS_REGION }}
+          aws-region: ${{ env.us-east-1 }}
 
       # Download task definition from ECS
       - name: Download ECS task definition
@@ -366,7 +366,7 @@ jobs:
         with:
           aws-access-key-id: ${{ secrets.ASIA5PCCZNRVSDUTMYFE }}
           aws-secret-access-key: ${{ secrets.ZpSmBvfB25LTkKWdoBnxqqBYkOBDSyX5UrOf7Pub }}
-          aws-region: ${{ env.AWS_REGION }}
+          aws-region: ${{ env.us-east-1 }}
 
       # Get service details and check running tasks
       - name: Check ECS service status
