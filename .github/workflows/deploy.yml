@@ -14,8 +14,6 @@ env:
   ECS_CLUSTER_NAME: devops-cluster
   ECS_SERVICE_NAME: devops-service
   ECS_TASK_DEFINITION_FAMILY: devops-task
-  TERRAFORM_VERSION: 1.5.0
-  TERRAFORM_BACKEND_BUCKET: devops-terraform-state-${{ github.repository_owner }}-us-east-1
 
 jobs:
   # =====================================================================
@@ -101,12 +99,12 @@ jobs:
           retention-days: 30
 
   # =====================================================================
-  # PHASE 2: INFRASTRUCTURE PROVISIONING (Terraform)
+  # PHASE 2: TERRAFORM INFRASTRUCTURE
   # =====================================================================
   terraform:
-    name: Provision Infrastructure
+    name: Terraform Infrastructure
     runs-on: ubuntu-latest
-    needs: test
+    needs: [test]
     # Only run on push to main/develop branches
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
 
@@ -114,6 +112,10 @@ jobs:
       # Checkout code
       - name: Checkout code
         uses: actions/checkout@v4
+
+      # Setup Terraform
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
 
       # Configure AWS credentials
       - name: Configure AWS credentials
@@ -123,111 +125,31 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      # Create S3 bucket for Terraform state (if not exists)
-      - name: Create S3 backend bucket for Terraform state
-        run: |
-          aws s3 ls s3://${{ env.TERRAFORM_BACKEND_BUCKET }} || \
-          aws s3 mb s3://${{ env.TERRAFORM_BACKEND_BUCKET }} \
-            --region ${{ env.AWS_REGION }}
-        continue-on-error: true
+      # Terraform Init
+      - name: Terraform Init
+        run: cd infrastructure && terraform init
 
-      # Enable versioning on S3 bucket
-      - name: Enable S3 bucket versioning
-        run: |
-          aws s3api put-bucket-versioning \
-            --bucket ${{ env.TERRAFORM_BACKEND_BUCKET }} \
-            --versioning-configuration Status=Enabled
-        continue-on-error: true
+      # Terraform Plan
+      - name: Terraform Plan
+        run: cd infrastructure && terraform plan
 
-      # Enable server-side encryption on S3 bucket
-      - name: Enable S3 bucket encryption
-        run: |
-          aws s3api put-bucket-encryption \
-            --bucket ${{ env.TERRAFORM_BACKEND_BUCKET }} \
-            --server-side-encryption-configuration '{
-              "Rules": [{
-                "ApplyServerSideEncryptionByDefault": {
-                  "SSEAlgorithm": "AES256"
-                }
-              }]
-            }'
-        continue-on-error: true
+      # Terraform Apply
+      - name: Terraform Apply
+        run: cd infrastructure && terraform apply -auto-approve
 
-      # Block all public access on S3 bucket
-      - name: Block public access on S3 bucket
-        run: |
-          aws s3api put-public-access-block \
-            --bucket ${{ env.TERRAFORM_BACKEND_BUCKET }} \
-            --public-access-block-configuration \
-              "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true"
-        continue-on-error: true
-
-      # Setup Terraform
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v2
-        with:
-          terraform_version: ${{ env.TERRAFORM_VERSION }}
-
-      # Initialize Terraform with remote backend
-      - name: Terraform init
+      # Capture Terraform outputs
+      - name: Terraform Outputs
+        id: terraform-outputs
         run: |
           cd infrastructure
-          terraform init \
-            -backend-config="bucket=${{ env.TERRAFORM_BACKEND_BUCKET }}" \
-            -backend-config="key=terraform.tfstate" \
-            -backend-config="region=${{ env.AWS_REGION }}" \
-            -backend-config="encrypt=true"
-        continue-on-error: true
-
-      # Validate Terraform configuration
-      - name: Terraform validate
-        run: |
-          cd infrastructure
-          terraform validate
-        continue-on-error: true
-
-      # Format check
-      - name: Terraform format check
-        run: |
-          cd infrastructure
-          terraform fmt -check -recursive
-        continue-on-error: true
-
-      # Generate Terraform plan
-      - name: Terraform plan
-        run: |
-          cd infrastructure
-          terraform plan -out=tfplan
-        continue-on-error: true
-
-      # Upload plan as artifact
-      - name: Upload Terraform plan
-        uses: actions/upload-artifact@v4
-        continue-on-error: true
-        with:
-          name: terraform-plan
-          path: infrastructure/tfplan
-          retention-days: 5
-      - name: Terraform apply
-        if: github.ref == 'refs/heads/main'
-        run: |
-          cd infrastructure
-          terraform apply -auto-approve tfplan
-        continue-on-error: true
-
-      # Store Terraform outputs for next jobs
-      - name: Export Terraform outputs
-        id: terraform
-        run: |
-          cd infrastructure
-          echo "ecr_repository_url=$(terraform output -raw ecr_repository_url 2>/dev/null || echo 'UNKNOWN')" >> $GITHUB_OUTPUT
-          echo "ecs_cluster_name=${{ env.ECS_CLUSTER_NAME }}" >> $GITHUB_OUTPUT
-          echo "ecs_service_name=${{ env.ECS_SERVICE_NAME }}" >> $GITHUB_OUTPUT
-
-    outputs:
-      ecr_repository_url: ${{ steps.terraform.outputs.ecr_repository_url }}
-      ecs_cluster_name: ${{ steps.terraform.outputs.ecs_cluster_name }}
-      ecs_service_name: ${{ steps.terraform.outputs.ecs_service_name }}
+          echo "ecr_repository_url=$(terraform output -raw ecr_repository_url)" >> $GITHUB_OUTPUT
+          echo "ecs_cluster_name=$(terraform output -raw ecs_cluster_name)" >> $GITHUB_OUTPUT
+          echo "ecs_service_name=$(terraform output -raw ecs_service_name)" >> $GITHUB_OUTPUT
+          echo "alb_dns_name=$(terraform output -raw alb_dns_name)" >> $GITHUB_OUTPUT
+      ecr_repository_url: ${{ steps.terraform-outputs.outputs.ecr_repository_url }}
+      ecs_cluster_name: ${{ steps.terraform-outputs.outputs.ecs_cluster_name }}
+      ecs_service_name: ${{ steps.terraform-outputs.outputs.ecs_service_name }}
+      alb_dns_name: ${{ steps.terraform-outputs.outputs.alb_dns_name }}
 
   # =====================================================================
   # PHASE 3: CONTAINER BUILD AND ECS DEPLOYMENT
@@ -289,7 +211,7 @@ jobs:
   deploy-ecs:
     name: Deploy to ECS Fargate
     runs-on: ubuntu-latest
-    needs: [build_and_push, terraform]
+    needs: [build_and_push]
     # Only run on push to main/develop branches
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
 
@@ -336,8 +258,8 @@ jobs:
       - name: Update ECS service
         run: |
           aws ecs update-service \
-            --cluster ${{ needs.terraform.outputs.ecs_cluster_name }} \
-            --service ${{ needs.terraform.outputs.ecs_service_name }} \
+            --cluster ${{ env.ECS_CLUSTER_NAME }} \
+            --service ${{ env.ECS_SERVICE_NAME }} \
             --force-new-deployment
         continue-on-error: true
 
@@ -345,8 +267,8 @@ jobs:
       - name: Wait for ECS service to stabilize
         run: |
           aws ecs wait services-stable \
-            --cluster ${{ needs.terraform.outputs.ecs_cluster_name }} \
-            --services ${{ needs.terraform.outputs.ecs_service_name }}
+            --cluster ${{ env.ECS_CLUSTER_NAME }} \
+            --services ${{ env.ECS_SERVICE_NAME }}
         continue-on-error: true
 
   # =====================================================================
@@ -355,7 +277,7 @@ jobs:
   health-check:
     name: Verify Service Health
     runs-on: ubuntu-latest
-    needs: [build_and_push, deploy-ecs, terraform]
+    needs: [build_and_push, deploy-ecs]
     # Only run on push to main/develop branches
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
 
@@ -373,8 +295,8 @@ jobs:
         run: |
           echo "Checking ECS service status..."
           aws ecs describe-services \
-            --cluster ${{ needs.terraform.outputs.ecs_cluster_name }} \
-            --services ${{ needs.terraform.outputs.ecs_service_name }} \
+            --cluster ${{ env.ECS_CLUSTER_NAME }} \
+            --services ${{ env.ECS_SERVICE_NAME }} \
             --query 'services[0].[status,runningCount,desiredCount]' \
             --output table
 
@@ -383,8 +305,8 @@ jobs:
         run: |
           echo "Listing running tasks..."
           aws ecs list-tasks \
-            --cluster ${{ needs.terraform.outputs.ecs_cluster_name }} \
-            --service-name ${{ needs.terraform.outputs.ecs_service_name }} \
+            --cluster ${{ env.ECS_CLUSTER_NAME }} \
+            --service-name ${{ env.ECS_SERVICE_NAME }} \
             --desired-status RUNNING \
             --output table
 
@@ -392,8 +314,8 @@ jobs:
       - name: Verify task health
         run: |
           TASKS=$(aws ecs list-tasks \
-            --cluster ${{ needs.terraform.outputs.ecs_cluster_name }} \
-            --service-name ${{ needs.terraform.outputs.ecs_service_name }} \
+            --cluster ${{ env.ECS_CLUSTER_NAME }} \
+            --service-name ${{ env.ECS_SERVICE_NAME }} \
             --desired-status RUNNING \
             --query 'taskArns[0]' \
             --output text)
@@ -405,7 +327,7 @@ jobs:
 
           echo "Task details:"
           aws ecs describe-tasks \
-            --cluster ${{ needs.terraform.outputs.ecs_cluster_name }} \
+            --cluster ${{ env.ECS_CLUSTER_NAME }} \
             --tasks $TASKS \
             --query 'tasks[0].[taskArn,lastStatus,healthStatus]' \
             --output table
@@ -435,7 +357,7 @@ jobs:
   notify:
     name: Pipeline Notification
     runs-on: ubuntu-latest
-    needs: [test, terraform, build_and_push, deploy-ecs, health-check]
+    needs: [test, build_and_push, deploy-ecs, health-check]
     if: always()
 
     steps:
