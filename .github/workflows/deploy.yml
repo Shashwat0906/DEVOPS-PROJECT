@@ -36,10 +36,11 @@ jobs:
 
       # Setup Node.js environment
       - name: Setup Node.js ${{ matrix.node-version }}
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}
           cache: 'npm'
+          cache-dependency-path: backend/package-lock.json
 
       # Install backend dependencies and run tests
       - name: Install backend dependencies
