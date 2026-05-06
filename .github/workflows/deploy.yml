@@ -33,6 +33,8 @@ jobs:
       # Checkout code
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       # Setup Node.js environment
       - name: Setup Node.js ${{ matrix.node-version }}
@@ -114,10 +116,12 @@ jobs:
       # Checkout code
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       # Configure AWS credentials
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v2
+        uses: aws-actions/configure-aws-credentials@v3
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -244,10 +248,12 @@ jobs:
       # Checkout code
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       # Configure AWS credentials
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v2
+        uses: aws-actions/configure-aws-credentials@v3
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -299,10 +305,12 @@ jobs:
       # Checkout code
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       # Configure AWS credentials
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v2
+        uses: aws-actions/configure-aws-credentials@v3
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -365,7 +373,7 @@ jobs:
     steps:
       # Configure AWS credentials
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v2
+        uses: aws-actions/configure-aws-credentials@v3
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
